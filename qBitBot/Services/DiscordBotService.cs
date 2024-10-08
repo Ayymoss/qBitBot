@@ -1,4 +1,3 @@
-using System.Text;
 using Discord;
 using Discord.WebSocket;
 using GenerativeAI.Classes;
@@ -7,7 +6,7 @@ using qBitBot.Utilities;
 
 namespace qBitBot.Services;
 
-public class DiscordBotService : BackgroundService
+public class DiscordBotService
 {
     private readonly DiscordSocketClient _client;
     private readonly ILogger<DiscordBotService> _logger;
@@ -28,21 +27,22 @@ public class DiscordBotService : BackgroundService
         _client.MessageReceived += MessageReceivedAsync;
     }
 
-    protected override async Task ExecuteAsync(CancellationToken cancellationToken)
+    public async Task StartBotAsync()
     {
-        _ = Task.Run(async () => await _messageProcessingService.ProcessMessagesAsync(cancellationToken), cancellationToken);
-
         await _client.LoginAsync(TokenType.Bot, _config.BotToken);
         await _client.SetStatusAsync(UserStatus.Online);
         await _client.StartAsync();
-
-        cancellationToken.WaitHandle.WaitOne();
     }
 
     private async Task MessageReceivedAsync(SocketMessage socketMessage)
     {
         if (socketMessage.Author.IsBot || socketMessage.Author.IsWebhook) return;
         if (socketMessage is not SocketUserMessage message) return;
+
+        // Someone else already responded to their question.
+        var answered = _messageProcessingService.IsAnsweredQuestion(message.Author, message.ReferencedMessage.Author);
+        if (message.Type is MessageType.Reply && answered) return;
+
 
         List<PromptContentBase> prompts = [];
 

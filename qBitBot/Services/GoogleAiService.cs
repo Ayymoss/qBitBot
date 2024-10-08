@@ -40,7 +40,7 @@ public class GoogleAiService(Configuration config, ILogger<GoogleAiService> logg
     {
         List<Part> parts = [];
 
-        logger.LogInformation("Sanitizing prompts for Gemini's API...");
+        logger.LogDebug("Sanitizing prompts for Gemini's API...");
         foreach (var prompt in prompts)
         {
             switch (prompt)
@@ -70,7 +70,7 @@ public class GoogleAiService(Configuration config, ILogger<GoogleAiService> logg
             }
         }
 
-        logger.LogInformation("Sending parts to Gemini...");
+        logger.LogDebug("Sending parts to Gemini...");
         return await GenerateResponseAsync(parts, cancellationToken);
     }
 

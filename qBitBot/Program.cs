@@ -31,9 +31,10 @@ public static class Program
 
         serviceCollection.AddSingleton(new DiscordSocketClient(new DiscordSocketConfig { GatewayIntents = GatewayIntents.All }));
         serviceCollection.AddSingleton<GoogleAiService>();
+        serviceCollection.AddSingleton<DiscordBotService>();
         serviceCollection.AddSingleton<MessageProcessingService>();
 
-        serviceCollection.AddHostedService<DiscordBotService>();
+        serviceCollection.AddHostedService<AppEntry>();
     }
 
     private static void RegisterHostConfiguration(IConfigurationBuilder configurationBuilder)
