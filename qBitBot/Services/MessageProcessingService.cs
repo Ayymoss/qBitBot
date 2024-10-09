@@ -163,22 +163,19 @@ public class MessageProcessingService(
 
     public static List<PromptContentBase> AttachSystemPrompt(List<PromptContentBase> prompts)
     {
-        List<PromptContentBase> systemText =
-        [
-            new PromptText
-            {
-                MessageId = 0,
-                Text = "=== SYSTEM TEXT START ===\n" +
-                       "DO YOU THINK THE FOLLOWING IS A SUPPORT QUESTION RELATED TO qBitTorrent? IF SO, RESPOND WITH 'YES', " +
-                       "AND CONTINUE WITH ANSWERING THE QUESTION AS A FRIENDLY ASSISTANT (IF THERE ARE SCREENSHOTS ATTACHED, ANALYSE THEM), " +
-                       "ELSE RESPOND WITH 'NO' AND STOP RESPONDING!\n" +
-                       "CONTEXT: ASSUMING THE QUESTION BELOW IS SUPPORT-RELATED, IT MAY INCLUDE SCREENSHOTS. " +
-                       "IF IT INCLUDES A SCREENSHOT OF THE CLIENT, CHECK THE PEERS, AVAILABILITY, STATUS, ETC. AND USE THIS TO CONTEXTUALISE YOUR TROUBLESHOOTING.\n" +
-                       "=== SYSTEM TEXT END ==="
-            }
-        ];
+        var systemText = new PromptText
+        {
+            MessageId = 0,
+            Text = "=== SYSTEM TEXT START ===\n" +
+                   "DO YOU THINK THE FOLLOWING IS A SUPPORT QUESTION RELATED TO qBitTorrent? IF SO, RESPOND WITH 'YES', " +
+                   "AND CONTINUE WITH ANSWERING THE QUESTION AS A FRIENDLY ASSISTANT (IF THERE ARE SCREENSHOTS ATTACHED, ANALYSE THEM), " +
+                   "ELSE RESPOND WITH 'NO' AND STOP RESPONDING!\n" +
+                   "CONTEXT: ASSUMING THE QUESTION BELOW IS SUPPORT-RELATED, IT MAY INCLUDE SCREENSHOTS. " +
+                   "IF IT INCLUDES A SCREENSHOT OF THE CLIENT, CHECK THE PEERS, AVAILABILITY, STATUS, ETC. AND USE THIS TO CONTEXTUALISE YOUR TROUBLESHOOTING.\n" +
+                   "=== SYSTEM TEXT END ==="
+        };
 
-        return systemText.Concat(prompts).ToList();
+        return prompts.Prepend(systemText).ToList();
     }
 
     public void ClearOldUsages()
@@ -206,5 +203,18 @@ public class MessageProcessingService(
     public int GetUserUsageCount(ulong guildUserId)
     {
         return _recentUsage.Count(x => x.Key == guildUserId);
+    }
+
+    public void InvalidateQuestion(List<IMessage> relatedMessages)
+    {
+        var messageIds = relatedMessages.Select(m => m.Id).ToHashSet();
+
+        foreach (var questionKvp in _openQuestions)
+        {
+            if (!questionKvp.Value.Any(prompt => messageIds.Contains(prompt.MessageId))) continue;
+
+            logger.LogDebug("Removing question {QuestionAuthor} as someone ran MessageCommand on it already...", questionKvp.Key.UserId);
+            _openQuestions.TryRemove(questionKvp.Key, out _);
+        }
     }
 }

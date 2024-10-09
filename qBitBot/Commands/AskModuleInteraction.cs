@@ -9,7 +9,7 @@ public class AskModuleInteraction(MessageProcessingService messageProcessingServ
     : InteractionModuleBase<SocketInteractionContext>
 {
     [DefaultMemberPermissions(GuildPermission.SendMessages)]
-    [MessageCommand("Ask")]
+    [MessageCommand("Ask Gemini")]
     public async Task AskAsync(IMessage message)
     {
         if (message.Author is not SocketGuildUser guildUser) return;
@@ -18,7 +18,7 @@ public class AskModuleInteraction(MessageProcessingService messageProcessingServ
         {
             messageProcessingService.ClearOldUsages();
             var userQueryCount = messageProcessingService.GetUserUsageCount(guildUser.Id);
-            
+
             if (guildUser.Roles.All(role => role.Id == guildUser.Guild.EveryoneRole.Id) && userQueryCount > 2)
             {
                 await FollowupAsync("You've used this bot a lot recently. If you wish to continue, " +
@@ -63,6 +63,7 @@ public class AskModuleInteraction(MessageProcessingService messageProcessingServ
                 return;
             }
 
+            messageProcessingService.InvalidateQuestion(relatedMessages);
             await FollowupAsync(string.Join("\n", responseSplit[1..]));
         }
         catch (Exception e)
