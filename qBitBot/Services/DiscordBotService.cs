@@ -1,6 +1,8 @@
 using Discord;
+using Discord.Interactions;
 using Discord.WebSocket;
 using GenerativeAI.Classes;
+using qBitBot.Commands;
 using qBitBot.Models;
 using qBitBot.Utilities;
 
@@ -13,15 +15,17 @@ public class DiscordBotService
     private readonly Configuration _config;
     private readonly MessageProcessingService _messageProcessingService;
     private readonly HttpClient _httpClient;
+    private readonly IServiceProvider _serviceProvider;
 
     public DiscordBotService(DiscordSocketClient client, ILogger<DiscordBotService> logger, Configuration config,
-        MessageProcessingService messageProcessingService, HttpClient httpClient)
+        MessageProcessingService messageProcessingService, HttpClient httpClient, IServiceProvider serviceProvider)
     {
         _client = client;
         _logger = logger;
         _config = config;
-        _messageProcessingService = messageProcessingService;
         _httpClient = httpClient;
+        _serviceProvider = serviceProvider;
+        _messageProcessingService = messageProcessingService;
 
         _client.Log += Log;
         _client.MessageReceived += MessageReceivedAsync;
@@ -31,6 +35,18 @@ public class DiscordBotService
     {
         await _client.LoginAsync(TokenType.Bot, _config.BotToken);
         await _client.SetStatusAsync(UserStatus.Online);
+
+        var interactionService = new InteractionService(_client);
+        await interactionService.AddModulesAsync(typeof(AskModuleInteraction).Assembly, _serviceProvider);
+
+        _client.InteractionCreated += async interaction =>
+        {
+            var ctx = new SocketInteractionContext(_client, interaction);
+            await interactionService.ExecuteCommandAsync(ctx, _serviceProvider);
+        };
+
+        _client.Ready += async () => await interactionService.RegisterCommandsGloballyAsync();
+
         await _client.StartAsync();
     }
 
@@ -38,43 +54,22 @@ public class DiscordBotService
     {
         if (socketMessage.Author.IsBot || socketMessage.Author.IsWebhook) return;
         if (socketMessage is not SocketUserMessage message) return;
+        if (socketMessage.Author is not SocketGuildUser guildUser) return;
 
         // Someone else already responded to their question.
-        var answered = _messageProcessingService.IsAnsweredQuestion(message.Author, message.ReferencedMessage.Author);
-        if (message.Type is MessageType.Reply && answered) return;
+        if (message.Type is MessageType.Reply && _messageProcessingService
+                .IsAnsweredQuestion(guildUser, message.ReferencedMessage.Author)) return;
 
-
-        List<PromptContentBase> prompts = [];
-
-        if (message.Attachments.Count is not 0)
+        // Ignore messages where the user has established themselves in the Discord.
+        if (!guildUser.JoinedAt.HasValue || guildUser.JoinedAt.Value.Add(_config.IgnoreQuestionsAfter) < TimeProvider.System.GetUtcNow())
         {
-            foreach (var attachment in message.Attachments)
-            {
-                if (!attachment.ContentType.StartsWith("image/")) continue;
-
-                var response = await _httpClient.GetAsync(attachment.ProxyUrl);
-                if (!response.IsSuccessStatusCode) continue;
-
-                var imageBytes = await response.Content.ReadAsByteArrayAsync();
-
-                prompts.Add(new PromptImage
-                {
-                    MessageId = message.Id,
-                    Image = new FileObject(imageBytes, attachment.Filename)
-                });
-            }
+            _logger.LogDebug("Ignoring message from {Author} as their join date {JoinDate} is older than {IgnoreTime}", guildUser.Username,
+                guildUser.JoinedAt ?? default, _config.IgnoreQuestionsAfter);
+            return;
         }
 
-        if (!string.IsNullOrWhiteSpace(message.Content))
-        {
-            prompts.Add(new PromptText
-            {
-                MessageId = message.Id,
-                Text = message.Content
-            });
-        }
-
-        _messageProcessingService.AddQuestion(socketMessage.Author, message, prompts);
+        var prompts = await _messageProcessingService.CreatePromptParts([message]);
+        _messageProcessingService.AddQuestion(guildUser.Id, guildUser.Username, message, prompts);
     }
 
     private Task Log(LogMessage msg)
