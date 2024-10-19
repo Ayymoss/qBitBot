@@ -2,6 +2,7 @@
 using Discord;
 using Discord.WebSocket;
 using GenerativeAI.Classes;
+using qBitBot.Enums;
 using qBitBot.Models;
 using qBitBot.Utilities;
 
@@ -13,65 +14,87 @@ public class MessageProcessingService(
     Configuration config,
     HttpClient httpClient)
 {
-    private readonly ConcurrentDictionary<ulong, List<DateTimeOffset>> _recentUsage = [];
-    private readonly ConcurrentDictionary<UserContext, List<PromptContentBase>> _openQuestions = [];
+    /*
 
-    public void AddQuestion(ulong userId, string userName, SocketUserMessage socketUserMessage, List<PromptContentBase> prompts)
+Behaviour 1 - New User (Naturally invoked, no commands)
+1. A new user joins. They ask a question. If no one else answers after Configuration.GeminiRespondAfter, the bot responds.
+2. A user asks a follow-up question to the bot's response, the bot responds immediately, with the previous question and the bot's reply for added context.
+3. A user isn't classed as a 'new user' after they've been in the Discord for more than Configuration.IgnoreQuestionsAfter,
+    so the bot will not autoreply to anyone older than that duration.
+
+Behaviour 2 - Adhoc Usage (Command-invoked)
+1. A user asks a question and invokes the 'MessageCommand', the bot responds immediately.
+2. A user asks a follow-up question to the bot's response, same as 'New User' behaviour, it responds immediately with the user's context and bot's previous reply for context.
+3. If the user asks more than 3 questions in Configuration.UserContextClear, the bot will tell them they've hit the usage cap to prevent abuse.
+
+     */
+
+
+    private readonly ConcurrentDictionary<ulong, ConversationContext> _conversationContexts = [];
+
+    public void AddOrUpdateQuestion(SocketGuildUser user, SocketUserMessage message, bool respondImmediately)
     {
-        var messages = _openQuestions.FirstOrDefault(x => x.Key.UserId == userId);
-
-        if (messages.Key is null)
+        var context = _conversationContexts.AddOrUpdate(user.Id, new ConversationContext(user, message, false), (_, context) =>
         {
-            var promptContentBases = AttachSystemPrompt(prompts);
+            // We need to set prior questions as 'Responded' so there isn't a flood or AI provided answers.
+            var questions = context.Questions
+                .Where(x => x is ConversationContext.UserQuestion { Responded: false })
+                .Cast<ConversationContext.UserQuestion>();
+            foreach (var question in questions) question.Responded = true;
 
-            var author = new UserContext
-            {
-                UserName = userName,
-                UserId = userId,
-                SocketUserMessage = socketUserMessage,
-                Created = TimeProvider.System.GetUtcNow(),
-            };
-            _openQuestions.TryAdd(author, promptContentBases);
+            // We need to respond immediately if they are replying to the bot.
+            if (context.Questions.Last() is ConversationContext.SystemQuestion) respondImmediately = true;
 
-            logger.LogDebug("Added {Author} with {@Prompts}", userName, promptContentBases);
-            return;
-        }
+            // Add the latest question...
+            context.Questions.Add(new ConversationContext.UserQuestion(message, respondImmediately));
+            return context;
+        });
 
-        foreach (var prompt in prompts)
-        {
-            messages.Value.Add(prompt);
-        }
-
-        logger.LogDebug("Updated {Author} with {@Prompts}", userName, prompts);
+        context.UpdateLastActive();
+        logger.LogDebug("Added or updated {User} with {Message}", user.Username, message.Content);
     }
-
 
     public void RemoveAuthor(ulong authorId)
     {
-        var messages = _openQuestions.FirstOrDefault(x => x.Key.UserId == authorId);
-        if (messages.Key is null) return;
-        _openQuestions.TryRemove(messages.Key, out _);
+        var messages = _conversationContexts.FirstOrDefault(x => x.Key == authorId);
+        _conversationContexts.TryRemove(messages.Key, out _);
         logger.LogDebug("Removed {Author}", authorId);
     }
+
 
     public async Task ProcessMessagesAsync(CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
+            var oldQuestions = _conversationContexts
+                .Where(x => x.Value.LastActive < TimeProvider.System.GetUtcNow().Add(config.DeleteQuestionsAfter));
+            foreach (var question in oldQuestions)
+            {
+                RemoveAuthor(question.Key);
+            }
+
             try
             {
-                var questions = _openQuestions
-                    .Where(x => x.Key.Created.Add(config.GeminiRespondAfter) < TimeProvider.System.GetUtcNow());
+                var conversationContexts = _conversationContexts
+                    .Where(x => x.Value.Questions.Any(q => q is ConversationContext.UserQuestion
+                    {
+                        Responded: false
+                    })).Select(x => x.Value);
 
-                foreach (var question in questions)
+                foreach (var conversationContext in conversationContexts)
                 {
-                    logger.LogDebug("Handling question by {Author}", question.Key.UserName);
-                    var response = await GenerateResponseAsync(question.Value, cancellationToken);
+                    if (conversationContext.Questions.Last() is not ConversationContext.UserQuestion userQuestion) continue;
+                    if (!userQuestion.RespondImmediately &&
+                        conversationContext.LastActive < TimeProvider.System.GetUtcNow().Add(config.GeminiRespondAfter)) continue;
+
+                    logger.LogDebug("Handling question by {Author}", conversationContext.User.Username);
+                    var promptParts = await CreatePromptParts(conversationContext.Questions);
+                    var response = await GenerateResponseAsync(promptParts, cancellationToken);
 
                     if (string.IsNullOrWhiteSpace(response))
                     {
                         logger.LogWarning("Received response was empty, discarding question. Response: {Response}", response);
-                        RemoveAuthor(question.Key.UserId);
+                        RemoveAuthor(conversationContext.User.Id);
                         continue;
                     }
 
@@ -79,7 +102,8 @@ public class MessageProcessingService(
                     if (response.StartsWith("NO") || responseSplit.First().Contains("NO"))
                     {
                         logger.LogWarning("Received response started with 'NO', discarding question. Response: {Response}", response);
-                        RemoveAuthor(question.Key.UserId);
+                        RemoveAuthor(conversationContext.User.Id);
+
                         continue;
                     }
 
@@ -87,12 +111,15 @@ public class MessageProcessingService(
                     if (responseSplit.Length < 2)
                     {
                         logger.LogWarning("Received response less than 3 lines, discarding question. Response: {Response}", response);
-                        RemoveAuthor(question.Key.UserId);
+                        RemoveAuthor(conversationContext.User.Id);
+
                         continue;
                     }
 
-                    await question.Key.SocketUserMessage.ReplyAsync(string.Join("\n", responseSplit[1..]));
-                    RemoveAuthor(question.Key.UserId);
+                    userQuestion.Responded = true;
+                    var geminiResponse = string.Join("\n", responseSplit[1..]);
+                    await userQuestion.Message.ReplyAsync(geminiResponse);
+                    conversationContext.Questions.Add(new ConversationContext.SystemQuestion(geminiResponse)); // Keep system context.
                 }
 
                 Thread.Sleep(1_000);
@@ -100,7 +127,7 @@ public class MessageProcessingService(
             catch (Exception e)
             {
                 logger.LogError(e, "Exception during message processing");
-                _openQuestions.Clear(); // Remove all questions to avoid spamming the API in the event it fails prior to removal.
+                _conversationContexts.Clear(); // Remove all questions to avoid spamming the API in the event it fails prior to removal.
             }
         }
     }
@@ -114,57 +141,79 @@ public class MessageProcessingService(
     {
         if (messageAuthor.Id == replyAuthor.Id) return false;
 
-        var question = _openQuestions.FirstOrDefault(x => x.Key.UserId == replyAuthor.Id);
-        if (question.Key is null) return false;
+        var context = _conversationContexts.FirstOrDefault(x => x.Key == replyAuthor.Id).Value;
+        if (context.Questions.FirstOrDefault(x => x is ConversationContext.UserQuestion { Responded: false }) is not
+            ConversationContext.UserQuestion question) return false;
 
-        logger.LogInformation("Removing {@ReplyAuthor}'s question as {@MessageAuthor} responded",
+        question.Responded = true;
+        logger.LogInformation("Setting {@ReplyAuthor}'s question as {@MessageAuthor} responded",
             new { replyAuthor.Id, replyAuthor.Username }, new { messageAuthor.Id, replyAuthor.Username });
-        RemoveAuthor(replyAuthor.Id);
         return true;
     }
 
-    public async Task<List<PromptContentBase>> CreatePromptParts(List<IMessage> userMessages)
+    public async Task<List<PromptContentBase>> CreatePromptParts(List<ConversationContext.Question> questions)
     {
         List<PromptContentBase> prompts = [];
 
-        foreach (var message in userMessages)
+        foreach (var question in questions)
         {
-            if (message.Attachments.Count is not 0)
+            switch (question)
             {
-                foreach (var attachment in message.Attachments)
-                {
-                    if (!attachment.ContentType.StartsWith("image/")) continue;
-
-                    var response = await httpClient.GetAsync(attachment.ProxyUrl);
-                    if (!response.IsSuccessStatusCode) continue;
-
-                    var imageBytes = await response.Content.ReadAsByteArrayAsync();
-
-                    prompts.Add(new PromptImage
+                case ConversationContext.SystemQuestion systemQuestion:
+                    if (!string.IsNullOrWhiteSpace(systemQuestion.Message))
                     {
-                        MessageId = message.Id,
-                        Image = new FileObject(imageBytes, attachment.Filename)
-                    });
-                }
+                        prompts.Add(new PromptContentBase.PromptText
+                        {
+                            Sender = SenderType.User,
+                            MessageId = 0,
+                            Text = systemQuestion.ToString()
+                        });
+                    }
+
+                    break;
+                case ConversationContext.UserQuestion userQuestion:
+
+                    foreach (var attachment in userQuestion.Message.Attachments)
+                    {
+                        if (!attachment.ContentType.StartsWith("image/")) continue;
+
+                        var response = await httpClient.GetAsync(attachment.ProxyUrl);
+                        if (!response.IsSuccessStatusCode) continue;
+
+                        var imageBytes = await response.Content.ReadAsByteArrayAsync();
+
+                        prompts.Add(new PromptContentBase.PromptImage
+                        {
+                            Sender = SenderType.User,
+                            MessageId = userQuestion.Message.Id,
+                            Image = new FileObject(imageBytes, attachment.Filename)
+                        });
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(userQuestion.Message.Content))
+                    {
+                        prompts.Add(new PromptContentBase.PromptText
+                        {
+                            Sender = SenderType.User,
+                            MessageId = userQuestion.Message.Id,
+                            Text = userQuestion.ToString()
+                        });
+                    }
+
+                    break;
             }
 
-            if (!string.IsNullOrWhiteSpace(message.Content))
-            {
-                prompts.Add(new PromptText
-                {
-                    MessageId = message.Id,
-                    Text = message.Content
-                });
-            }
+            break;
         }
 
-        return prompts;
+        return AttachSystemPrompt(prompts);
     }
 
     public static List<PromptContentBase> AttachSystemPrompt(List<PromptContentBase> prompts)
     {
-        var systemText = new PromptText
+        var systemText = new PromptContentBase.PromptText
         {
+            Sender = SenderType.System,
             MessageId = 0,
             Text = "=== SYSTEM TEXT START ===\n" +
                    "DO YOU THINK THE FOLLOWING IS A SUPPORT QUESTION RELATED TO qBitTorrent? IF SO, RESPOND WITH 'YES', " +
@@ -178,43 +227,39 @@ public class MessageProcessingService(
         return prompts.Prepend(systemText).ToList();
     }
 
-    public void ClearOldUsages()
+    public void ClearOldQuestions()
     {
-        var keysToRemove = _recentUsage
-            .Where(kvp => kvp.Value.All(time => time < TimeProvider.System.GetUtcNow().AddDays(-1)))
+        var userIds = _conversationContexts
+            .Where(kvp => kvp.Value.LastActive < TimeProvider.System.GetUtcNow().Add(config.DeleteQuestionsAfter))
             .Select(kvp => kvp.Key)
             .ToList();
 
-        foreach (var key in keysToRemove)
+        foreach (var userId in userIds)
         {
-            _recentUsage.TryRemove(key, out _);
+            RemoveAuthor(userId);
         }
     }
 
-    public void AddUsage(ulong userId)
+    public bool IsUsageCapMet(ulong guildUserId)
     {
-        _recentUsage.AddOrUpdate(userId, _ => [TimeProvider.System.GetUtcNow()], (_, times) =>
-        {
-            times.Add(TimeProvider.System.GetUtcNow());
-            return times;
-        });
-    }
-
-    public int GetUserUsageCount(ulong guildUserId)
-    {
-        return _recentUsage.Count(x => x.Key == guildUserId);
+        return _conversationContexts.SingleOrDefault(x => x.Key == guildUserId).Value.UsageCapHit;
     }
 
     public void InvalidateQuestion(List<IMessage> relatedMessages)
     {
         var messageIds = relatedMessages.Select(m => m.Id).ToHashSet();
 
-        foreach (var questionKvp in _openQuestions)
+        foreach (var conversationKvp in _conversationContexts)
         {
-            if (!questionKvp.Value.Any(prompt => messageIds.Contains(prompt.MessageId))) continue;
+            var context = conversationKvp.Value;
+            foreach (var question in context.Questions)
+            {
+                if (question is not ConversationContext.UserQuestion userQuestion ||
+                    !messageIds.Contains(userQuestion.Message.Id)) continue;
 
-            logger.LogDebug("Removing question {QuestionAuthor} as someone ran MessageCommand on it already...", questionKvp.Key.UserId);
-            _openQuestions.TryRemove(questionKvp.Key, out _);
+                userQuestion.Responded = true;
+                logger.LogDebug("Setting question from {QuestionAuthor} as responded (MessageCommand used)", context.User);
+            }
         }
     }
 }

@@ -45,7 +45,7 @@ public class GoogleAiService(Configuration config, ILogger<GoogleAiService> logg
         {
             switch (prompt)
             {
-                case PromptImage image:
+                case PromptContentBase.PromptImage image:
                 {
                     var imagePart = new Part
                     {
@@ -58,7 +58,7 @@ public class GoogleAiService(Configuration config, ILogger<GoogleAiService> logg
                     parts.Add(imagePart);
                     break;
                 }
-                case PromptText text:
+                case PromptContentBase.PromptText text:
                 {
                     var textPart = new Part
                     {

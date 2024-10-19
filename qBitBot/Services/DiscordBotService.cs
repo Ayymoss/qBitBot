@@ -50,26 +50,26 @@ public class DiscordBotService
         await _client.StartAsync();
     }
 
-    private async Task MessageReceivedAsync(SocketMessage socketMessage)
+    private Task MessageReceivedAsync(SocketMessage socketMessage)
     {
-        if (socketMessage.Author.IsBot || socketMessage.Author.IsWebhook) return;
-        if (socketMessage is not SocketUserMessage message) return;
-        if (socketMessage.Author is not SocketGuildUser guildUser) return;
+        if (socketMessage.Author.IsBot || socketMessage.Author.IsWebhook) return Task.CompletedTask;
+        if (socketMessage is not SocketUserMessage message) return Task.CompletedTask;
+        if (socketMessage.Author is not SocketGuildUser guildUser) return Task.CompletedTask;
 
         // Someone else already responded to their question.
         if (message.Type is MessageType.Reply && _messageProcessingService
-                .IsAnsweredQuestion(guildUser, message.ReferencedMessage.Author)) return;
+                .IsAnsweredQuestion(guildUser, message.ReferencedMessage.Author)) return Task.CompletedTask;
 
         // Ignore messages where the user has established themselves in the Discord.
         if (!guildUser.JoinedAt.HasValue || guildUser.JoinedAt.Value.Add(_config.IgnoreQuestionsAfter) < TimeProvider.System.GetUtcNow())
         {
             _logger.LogDebug("Ignoring message from {Author} as their join date {JoinDate} is older than {IgnoreTime}", guildUser.Username,
                 guildUser.JoinedAt ?? default, _config.IgnoreQuestionsAfter);
-            return;
+            return Task.CompletedTask;
         }
 
-        var prompts = await _messageProcessingService.CreatePromptParts([message]);
-        _messageProcessingService.AddQuestion(guildUser.Id, guildUser.Username, message, prompts);
+        _messageProcessingService.AddOrUpdateQuestion(guildUser, message, false);
+        return Task.CompletedTask;
     }
 
     private Task Log(LogMessage msg)

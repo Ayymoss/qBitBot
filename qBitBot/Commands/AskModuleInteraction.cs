@@ -16,10 +16,9 @@ public class AskModuleInteraction(MessageProcessingService messageProcessingServ
 
         try
         {
-            messageProcessingService.ClearOldUsages();
-            var userQueryCount = messageProcessingService.GetUserUsageCount(guildUser.Id);
+            messageProcessingService.ClearOldQuestions();
 
-            if (guildUser.Roles.All(role => role.Id == guildUser.Guild.EveryoneRole.Id) && userQueryCount > 2)
+            if (guildUser.Roles.All(role => role.Id == guildUser.Guild.EveryoneRole.Id) && messageProcessingService.IsUsageCapMet(guildUser.Id))
             {
                 await FollowupAsync("You've used this bot a lot recently. If you wish to continue, " +
                                     "please use https://gemini.google.com/ yourself.", ephemeral: true);
