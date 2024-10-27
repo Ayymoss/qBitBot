@@ -113,6 +113,7 @@ public class MessageProcessingService(
             }
 
             var geminiResponse = string.Join("\n", responseSplit[1..]);
+            logger.LogDebug("Attempting to pass Gemini response to Discord: {Gemini}", geminiResponse);
             await context.OnMessageComplete(true, geminiResponse);
             context.Questions.Add(new ConversationContext.SystemMessage(geminiResponse)); // Keep system context.
             logger.LogDebug("Successfully responded to {User}", context.User.Username);
@@ -153,7 +154,7 @@ public class MessageProcessingService(
     public bool IsUsageCapMet(ulong guildUserId)
     {
         if (!_usageCounts.TryGetValue(guildUserId, out var count)) return false;
-        return count > 3;
+        return count >= 10;
     }
 
     public bool HasUserAskedQuestion(ulong guildUserId)

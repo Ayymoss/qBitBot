@@ -8,7 +8,7 @@ namespace qBitBot.Services;
 
 public class GoogleAiService(Configuration config, ILogger<GoogleAiService> logger)
 {
-    private readonly Gemini15Flash _model = new(config.GeminiToken)
+    private readonly Gemini15Pro _model = new(config.GeminiToken)
     {
         SafetySettings =
         [

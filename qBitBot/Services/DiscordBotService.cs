@@ -68,10 +68,20 @@ public class DiscordBotService
         }
 
         // Ignore messages where the user has established themselves in the Discord.
-        if (!guildUser.JoinedAt.HasValue || TimeProvider.System.GetUtcNow() - guildUser.JoinedAt.Value > _config.IgnoreUserAfter)
+        if (!_messageProcessingService.HasUserAskedQuestion(guildUser.Id) && (!guildUser.JoinedAt.HasValue ||
+                                                                              TimeProvider.System.GetUtcNow() - guildUser.JoinedAt.Value >
+                                                                              _config.IgnoreUserAfter))
         {
             _logger.LogDebug("Ignoring message from {Author} as their join date {JoinDate} is older than {IgnoreTime}", guildUser.Username,
                 guildUser.JoinedAt ?? default, _config.IgnoreUserAfter);
+            return Task.CompletedTask;
+        }
+
+        if (guildUser.Roles.All(role => role.Id == guildUser.Guild.EveryoneRole.Id)
+            && _messageProcessingService.IsUsageCapMet(guildUser.Id))
+        {
+            message.ReplyAsync("You've used this bot a lot recently. Please use Gemini yourself to continue.");
+            _logger.LogDebug("{User} has hit their usage cap", guildUser.Username);
             return Task.CompletedTask;
         }
 
