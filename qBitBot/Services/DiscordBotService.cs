@@ -55,12 +55,15 @@ public class DiscordBotService
         // User asked a follow-up question.
         if (_messageProcessingService.HasUserAskedQuestion(guildUser.Id) && message.Type is not MessageType.Reply)
         {
+            _logger.LogDebug("Ignoring message from {User} as wasn't a reply", guildUser.Username);
             return Task.CompletedTask;
         }
 
         // Someone else already responded to their question.
         if (message.Type is MessageType.Reply && _messageProcessingService.IsAnsweredQuestion(guildUser, message.ReferencedMessage.Author))
         {
+            _logger.LogDebug("{User} has responded to {Author}. Setting Responded state", guildUser.Username,
+                message.ReferencedMessage.Author.Username);
             return Task.CompletedTask;
         }
 
@@ -72,7 +75,7 @@ public class DiscordBotService
             return Task.CompletedTask;
         }
 
-        _messageProcessingService.AddOrUpdateQuestion(guildUser, [message], false, gemini => message.ReplyAsync(gemini));
+        _messageProcessingService.AddOrUpdateQuestion(guildUser, [message], false, (_, gemini) => message.ReplyAsync(gemini));
         return Task.CompletedTask;
     }
 

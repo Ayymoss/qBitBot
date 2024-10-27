@@ -16,19 +16,16 @@ public class AskModuleInteraction(MessageProcessingService messageProcessingServ
 
         try
         {
-            messageProcessingService.ClearOldQuestions();
-
-            if (messageProcessingService.IsUserInformedOfCap(guildUser.Id))
-            {
-                return;
-            }
-
             if (guildUser.Roles.All(role => role.Id == guildUser.Guild.EveryoneRole.Id)
                 && messageProcessingService.IsUsageCapMet(guildUser.Id))
             {
+                await DeferAsync(ephemeral: true);
+
                 await FollowupAsync(
                     "You've used this bot a lot recently. If you wish to continue, please use https://gemini.google.com/ yourself.",
                     ephemeral: true);
+
+                logger.LogDebug("{User} has hit their usage cap", guildUser.Username);
                 return;
             }
 
@@ -45,7 +42,8 @@ public class AskModuleInteraction(MessageProcessingService messageProcessingServ
                 .OrderBy(m => m.Timestamp)
                 .ToList();
 
-            messageProcessingService.AddOrUpdateQuestion(guildUser, relatedMessages, true, gemini => FollowupAsync(gemini));
+            messageProcessingService.AddOrUpdateQuestion(guildUser, relatedMessages, true,
+                (success, gemini) => FollowupAsync(success ? gemini : "Failed, message deemed unrelated to qBitTorrent."));
         }
         catch (Exception e)
         {

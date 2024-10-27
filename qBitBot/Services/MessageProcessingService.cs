@@ -17,6 +17,7 @@ public class MessageProcessingService(
     HttpClient httpClient) : IDisposable
 {
     private readonly ConcurrentDictionary<ulong, ConversationContext> _conversationContexts = [];
+    private readonly ConcurrentDictionary<ulong, int> _usageCounts = [];
 
     private readonly Timer _cleanUpTask = new()
     {
@@ -25,7 +26,8 @@ public class MessageProcessingService(
         Enabled = true
     };
 
-    public void AddOrUpdateQuestion(SocketGuildUser user, List<IMessage> messages, bool respondImmediately, Func<string, Task> callback)
+    public void AddOrUpdateQuestion(SocketGuildUser user, List<IMessage> messages, bool respondImmediately,
+        Func<bool, string, Task> callback)
     {
         foreach (var message in messages)
         {
@@ -36,11 +38,11 @@ public class MessageProcessingService(
                 context.Responded = false;
 
                 // We need to respond immediately if they are replying to the bot.
-                if (context.Questions.Last() is ConversationContext.SystemQuestion) respondImmediately = true;
+                if (context.Questions.Last() is ConversationContext.SystemMessage) respondImmediately = true;
                 context.OnMessageComplete = callback;
 
                 // Add the latest question...
-                context.Questions.Add(new ConversationContext.UserQuestion(message));
+                context.Questions.Add(new ConversationContext.UserMessage(message));
                 return context;
             });
         }
@@ -49,19 +51,19 @@ public class MessageProcessingService(
 
         context.UpdateLastActive();
 
-        if (respondImmediately) context.RespondTimer.Interval = 1;
+        if (respondImmediately) context.RespondAfter.Interval = 1;
         if (!context.TimerSubscribed)
         {
-            context.RespondTimer.Elapsed += RespondTimerOnElapsed;
+            context.RespondAfter.Elapsed += RespondAfterOnElapsed;
             context.TimerSubscribed = true;
         }
 
-        context.RespondTimer.Start();
+        if (!context.RespondAfter.Enabled) context.RespondAfter.Start();
 
         logger.LogDebug("Added or updated {User} with {Message}", user.Username, messages.Last());
         return;
 
-        void RespondTimerOnElapsed(object? sender, ElapsedEventArgs args) => ProcessMessagesAsync(sender, args, context);
+        void RespondAfterOnElapsed(object? sender, ElapsedEventArgs args) => ProcessMessagesAsync(sender, args, context);
     }
 
     private void RemoveAuthor(ulong authorId)
@@ -76,16 +78,18 @@ public class MessageProcessingService(
     {
         try
         {
-            if (context.Questions.Last() is not ConversationContext.UserQuestion) return;
+            if (context.Questions.Last() is not ConversationContext.UserMessage) return;
             if (context.Responded) return;
 
             logger.LogDebug("Handling question by {Author}", context.User.Username);
             var promptParts = await CreatePromptParts(context.Questions);
             var response = await GenerateResponseAsync(promptParts, CancellationToken.None);
+            _usageCounts.AddOrUpdate(context.User.Id, 1, (_, i) => i + 1);
 
             if (string.IsNullOrWhiteSpace(response))
             {
                 logger.LogWarning("Received response was empty, discarding question. Response: {Response}", response);
+                await context.OnMessageComplete(false, string.Empty);
                 RemoveAuthor(context.User.Id);
                 return;
             }
@@ -94,6 +98,7 @@ public class MessageProcessingService(
             if (response.StartsWith("NO") || responseSplit.First().Contains("NO"))
             {
                 logger.LogWarning("Received response started with 'NO', discarding question. Response: {Response}", response);
+                await context.OnMessageComplete(false, string.Empty);
                 RemoveAuthor(context.User.Id);
                 return;
             }
@@ -102,19 +107,26 @@ public class MessageProcessingService(
             if (responseSplit.Length < 2)
             {
                 logger.LogWarning("Received response less than 3 lines, discarding question. Response: {Response}", response);
+                await context.OnMessageComplete(false, string.Empty);
                 RemoveAuthor(context.User.Id);
                 return;
             }
 
             var geminiResponse = string.Join("\n", responseSplit[1..]);
-            await context.OnMessageComplete(geminiResponse);
-            context.Responded = true;
-            context.Questions.Add(new ConversationContext.SystemQuestion(geminiResponse)); // Keep system context.
+            await context.OnMessageComplete(true, geminiResponse);
+            context.Questions.Add(new ConversationContext.SystemMessage(geminiResponse)); // Keep system context.
+            logger.LogDebug("Successfully responded to {User}", context.User.Username);
         }
         catch (Exception e)
         {
             logger.LogError(e, "Exception during message processing");
-            _conversationContexts.Clear(); // Remove all questions to avoid spamming the API in the event it fails prior to removal.
+            // Not sure that this is needed if we use finally -> responded
+            //_conversationContexts.Clear(); // Remove all questions to avoid spamming the API in the event it fails prior to removal.
+        }
+        finally
+        {
+            // If it fails during reply, we should ignore and just set the state.
+            context.Responded = true;
         }
     }
 
@@ -128,44 +140,27 @@ public class MessageProcessingService(
         // User is the replier.
         if (messageAuthor.Id == replyAuthor.Id) return false;
 
-        var context = _conversationContexts.FirstOrDefault(x => x.Key == messageAuthor.Id);
+        var context = _conversationContexts.FirstOrDefault(x => x.Key == replyAuthor.Id);
         if (context.Value is null) return false;
 
         // Another user responded to the message author.
-        if (context.Key != messageAuthor.Id) context.Value.Responded = true;
+        if (context.Key == messageAuthor.Id) return context.Value.Responded;
 
+        context.Value.Responded = true;
         return context.Value.Responded;
-    }
-
-    public void ClearOldQuestions()
-    {
-        var userIds = _conversationContexts
-            .Where(kvp => TimeProvider.System.GetUtcNow() - kvp.Value.LastActive > config.DeleteQuestionsAfter)
-            .Select(kvp => kvp.Key)
-            .ToList();
-
-        foreach (var userId in userIds)
-        {
-            RemoveAuthor(userId);
-        }
     }
 
     public bool IsUsageCapMet(ulong guildUserId)
     {
-        var result = _conversationContexts.SingleOrDefault(x => x.Key == guildUserId);
-        if (result.Value is null) return false;
-
-        result.Value.UsageCapInformed = true;
-        return result.Value.UsageCapHit;
+        if (!_usageCounts.TryGetValue(guildUserId, out var count)) return false;
+        return count > 3;
     }
 
-    public bool IsUserInformedOfCap(ulong guildUserId)
+    public bool HasUserAskedQuestion(ulong guildUserId)
     {
-        var result = _conversationContexts.SingleOrDefault(x => x.Key == guildUserId);
-        return result.Value is not null && result.Value.UsageCapInformed;
+        var result = _conversationContexts.FirstOrDefault(x => x.Key == guildUserId);
+        return result.Value is not null && result.Value.Responded;
     }
-
-    public bool HasUserAskedQuestion(ulong guildUserId) => _conversationContexts.Any(x => x.Key == guildUserId);
 
     private void CleanUpConversations(object? sender, ElapsedEventArgs args)
     {
@@ -175,15 +170,11 @@ public class MessageProcessingService(
         foreach (var question in oldQuestions)
         {
             RemoveAuthor(question.Key);
+            _usageCounts.TryRemove(question.Key, out _);
         }
     }
 
-    public void Subscribe()
-    {
-        _cleanUpTask.Elapsed += CleanUpConversations;
-    }
-
-    private async Task<List<PromptContentBase>> CreatePromptParts(List<ConversationContext.Question> questions)
+    private async Task<List<PromptContentBase>> CreatePromptParts(List<ConversationContext.Message> questions)
     {
         List<PromptContentBase> prompts = [];
 
@@ -191,7 +182,8 @@ public class MessageProcessingService(
         {
             switch (question)
             {
-                case ConversationContext.SystemQuestion systemQuestion:
+                case ConversationContext.SystemMessage systemQuestion:
+                {
                     if (!string.IsNullOrWhiteSpace(systemQuestion.Message))
                     {
                         prompts.Add(new PromptContentBase.PromptText
@@ -203,8 +195,9 @@ public class MessageProcessingService(
                     }
 
                     break;
-                case ConversationContext.UserQuestion userQuestion:
-
+                }
+                case ConversationContext.UserMessage userQuestion:
+                {
                     foreach (var attachment in userQuestion.Message.Attachments)
                     {
                         if (!attachment.ContentType.StartsWith("image/")) continue;
@@ -233,10 +226,16 @@ public class MessageProcessingService(
                     }
 
                     break;
+                }
             }
         }
 
         return prompts;
+    }
+
+    public void Subscribe()
+    {
+        _cleanUpTask.Elapsed += CleanUpConversations;
     }
 
     public void Dispose()
