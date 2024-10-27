@@ -1,9 +1,7 @@
 using Discord;
 using Discord.Interactions;
 using Discord.WebSocket;
-using GenerativeAI.Classes;
 using qBitBot.Commands;
-using qBitBot.Models;
 using qBitBot.Utilities;
 
 namespace qBitBot.Services;
@@ -14,16 +12,14 @@ public class DiscordBotService
     private readonly ILogger<DiscordBotService> _logger;
     private readonly Configuration _config;
     private readonly MessageProcessingService _messageProcessingService;
-    private readonly HttpClient _httpClient;
     private readonly IServiceProvider _serviceProvider;
 
     public DiscordBotService(DiscordSocketClient client, ILogger<DiscordBotService> logger, Configuration config,
-        MessageProcessingService messageProcessingService, HttpClient httpClient, IServiceProvider serviceProvider)
+        MessageProcessingService messageProcessingService, IServiceProvider serviceProvider)
     {
         _client = client;
         _logger = logger;
         _config = config;
-        _httpClient = httpClient;
         _serviceProvider = serviceProvider;
         _messageProcessingService = messageProcessingService;
 
@@ -56,19 +52,27 @@ public class DiscordBotService
         if (socketMessage is not SocketUserMessage message) return Task.CompletedTask;
         if (socketMessage.Author is not SocketGuildUser guildUser) return Task.CompletedTask;
 
-        // Someone else already responded to their question.
-        if (message.Type is MessageType.Reply && _messageProcessingService
-                .IsAnsweredQuestion(guildUser, message.ReferencedMessage.Author)) return Task.CompletedTask;
-
-        // Ignore messages where the user has established themselves in the Discord.
-        if (!guildUser.JoinedAt.HasValue || guildUser.JoinedAt.Value.Add(_config.IgnoreQuestionsAfter) < TimeProvider.System.GetUtcNow())
+        // User asked a follow-up question.
+        if (_messageProcessingService.HasUserAskedQuestion(guildUser.Id) && message.Type is not MessageType.Reply)
         {
-            _logger.LogDebug("Ignoring message from {Author} as their join date {JoinDate} is older than {IgnoreTime}", guildUser.Username,
-                guildUser.JoinedAt ?? default, _config.IgnoreQuestionsAfter);
             return Task.CompletedTask;
         }
 
-        _messageProcessingService.AddOrUpdateQuestion(guildUser, message, false);
+        // Someone else already responded to their question.
+        if (message.Type is MessageType.Reply && _messageProcessingService.IsAnsweredQuestion(guildUser, message.ReferencedMessage.Author))
+        {
+            return Task.CompletedTask;
+        }
+
+        // Ignore messages where the user has established themselves in the Discord.
+        if (!guildUser.JoinedAt.HasValue || TimeProvider.System.GetUtcNow() - guildUser.JoinedAt.Value > _config.IgnoreUserAfter)
+        {
+            _logger.LogDebug("Ignoring message from {Author} as their join date {JoinDate} is older than {IgnoreTime}", guildUser.Username,
+                guildUser.JoinedAt ?? default, _config.IgnoreUserAfter);
+            return Task.CompletedTask;
+        }
+
+        _messageProcessingService.AddOrUpdateQuestion(guildUser, [message], false, gemini => message.ReplyAsync(gemini));
         return Task.CompletedTask;
     }
 

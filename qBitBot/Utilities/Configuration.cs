@@ -6,6 +6,6 @@ public class Configuration
     public string BotToken { get; set; } = null!;
     public bool Debug { get; set; }
     public TimeSpan GeminiRespondAfter { get; set; } = TimeSpan.FromMinutes(20);
-    public TimeSpan IgnoreQuestionsAfter { get; set; } = TimeSpan.FromHours(1);
+    public TimeSpan IgnoreUserAfter { get; set; } = TimeSpan.FromHours(2);
     public TimeSpan DeleteQuestionsAfter { get; set; } = TimeSpan.FromDays(1);
 }

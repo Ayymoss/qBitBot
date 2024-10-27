@@ -18,10 +18,17 @@ public class AskModuleInteraction(MessageProcessingService messageProcessingServ
         {
             messageProcessingService.ClearOldQuestions();
 
-            if (guildUser.Roles.All(role => role.Id == guildUser.Guild.EveryoneRole.Id) && messageProcessingService.IsUsageCapMet(guildUser.Id))
+            if (messageProcessingService.IsUserInformedOfCap(guildUser.Id))
             {
-                await FollowupAsync("You've used this bot a lot recently. If you wish to continue, " +
-                                    "please use https://gemini.google.com/ yourself.", ephemeral: true);
+                return;
+            }
+
+            if (guildUser.Roles.All(role => role.Id == guildUser.Guild.EveryoneRole.Id)
+                && messageProcessingService.IsUsageCapMet(guildUser.Id))
+            {
+                await FollowupAsync(
+                    "You've used this bot a lot recently. If you wish to continue, please use https://gemini.google.com/ yourself.",
+                    ephemeral: true);
                 return;
             }
 
@@ -38,32 +45,7 @@ public class AskModuleInteraction(MessageProcessingService messageProcessingServ
                 .OrderBy(m => m.Timestamp)
                 .ToList();
 
-            var prompts = MessageProcessingService.AttachSystemPrompt(await messageProcessingService.CreatePromptParts(relatedMessages));
-            var response = await messageProcessingService.GenerateResponseAsync(prompts, default);
-
-            if (string.IsNullOrWhiteSpace(response))
-            {
-                await FollowupAsync("No response received...", ephemeral: true);
-                return;
-            }
-
-            messageProcessingService.AddUsage(guildUser.Id);
-
-            var responseSplit = response.Split(["\r\n", "\n"], StringSplitOptions.None);
-            if (response.StartsWith("NO") || responseSplit.First().Contains("NO"))
-            {
-                await FollowupAsync("Question is not support related.", ephemeral: true);
-                return;
-            }
-
-            if (responseSplit.Length < 2)
-            {
-                await FollowupAsync("No response received...", ephemeral: true);
-                return;
-            }
-
-            messageProcessingService.InvalidateQuestion(relatedMessages);
-            await FollowupAsync(string.Join("\n", responseSplit[1..]));
+            messageProcessingService.AddOrUpdateQuestion(guildUser, relatedMessages, true, gemini => FollowupAsync(gemini));
         }
         catch (Exception e)
         {
