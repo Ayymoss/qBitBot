@@ -53,14 +53,14 @@ public class DiscordBotService
         if (socketMessage.Author is not SocketGuildUser guildUser) return Task.CompletedTask;
 
         // User asked a follow-up question.
-        if (_messageProcessingService.HasUserAskedQuestion(guildUser.Id) && message.Type is not MessageType.Reply)
+        if (message.Type is not MessageType.Reply && _messageProcessingService.HasUserAskedQuestion(guildUser.Id))
         {
-            _logger.LogDebug("Ignoring message from {User} as wasn't a reply", guildUser.Username);
+            _logger.LogDebug("Ignoring message from {User} as it wasn't a reply", guildUser.Username);
             return Task.CompletedTask;
         }
 
         // Someone else already responded to their question.
-        if (message.Type is MessageType.Reply && _messageProcessingService.IsAnsweredQuestion(guildUser, message.ReferencedMessage.Author))
+        if (_messageProcessingService.IsAnsweredQuestion(message))
         {
             _logger.LogDebug("{User} has responded to {Author}. Setting Responded state", guildUser.Username,
                 message.ReferencedMessage.Author.Username);

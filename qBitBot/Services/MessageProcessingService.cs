@@ -14,7 +14,8 @@ public class MessageProcessingService(
     ILogger<MessageProcessingService> logger,
     GoogleAiService googleAiService,
     Configuration config,
-    HttpClient httpClient) : IDisposable
+    HttpClient httpClient,
+    DiscordSocketClient client) : IDisposable
 {
     private readonly ConcurrentDictionary<ulong, ConversationContext> _conversationContexts = [];
     private readonly ConcurrentDictionary<ulong, int> _usageCounts = [];
@@ -136,19 +137,31 @@ public class MessageProcessingService(
         return (await googleAiService.GenerateResponseAsync(questions, cancellationToken)).Text();
     }
 
-    public bool IsAnsweredQuestion(IUser messageAuthor, IUser replyAuthor)
+    public bool IsAnsweredQuestion(SocketUserMessage message)
     {
-        // User is the replier.
-        if (messageAuthor.Id == replyAuthor.Id) return false;
+        if (message.Type is not MessageType.Reply) return false;
 
-        var context = _conversationContexts.FirstOrDefault(x => x.Key == replyAuthor.Id);
+        var messageAuthorId = message.Author.Id;
+        var replyAuthorId = message.ReferencedMessage.Author.Id;
+        var botId = client.CurrentUser.Id;
+
+        if (messageAuthorId == replyAuthorId) return false;
+
+        var context = _conversationContexts.FirstOrDefault(x => x.Key == messageAuthorId);
         if (context.Value is null) return false;
 
-        // Another user responded to the message author.
-        if (context.Key == messageAuthor.Id) return context.Value.Responded;
+        // If the bot HAS responded and the user ISN'T replying to the bot, set Responded to true and return true
+        if (context.Value.Responded && context.Value.Questions.LastOrDefault() is ConversationContext.SystemMessage &&
+            replyAuthorId != botId)
+        {
+            context.Value.Responded = true;
+            return true;
+        }
 
+        // If another user has responded (not the bot)
+        if (replyAuthorId == botId || replyAuthorId == messageAuthorId) return false;
         context.Value.Responded = true;
-        return context.Value.Responded;
+        return true;
     }
 
     public bool IsUsageCapMet(ulong guildUserId)
