@@ -85,6 +85,7 @@ public class MessageProcessingService(
             logger.LogDebug("Handling question by {Author}", context.User.Username);
             var promptParts = await CreatePromptParts(context.Questions);
             var response = await GenerateResponseAsync(promptParts, CancellationToken.None);
+
             _usageCounts.AddOrUpdate(context.User.Id, 1, (_, i) => i + 1);
 
             if (string.IsNullOrWhiteSpace(response))
@@ -95,6 +96,9 @@ public class MessageProcessingService(
                 return;
             }
 
+            // Gemini, for some reason, loves to double-space.
+            response = response.Replace("  ", " ");
+
             var responseSplit = response.Split(["\r\n", "\n"], StringSplitOptions.None);
             if (response.StartsWith("NO") || responseSplit.First().Contains("NO"))
             {
@@ -104,26 +108,24 @@ public class MessageProcessingService(
                 return;
             }
 
-            logger.LogDebug("Sending response to Discord...");
-            if (responseSplit.Length < 2)
+            try
             {
-                logger.LogWarning("Received response less than 3 lines, discarding question. Response: {Response}", response);
-                await context.OnMessageComplete(false, string.Empty);
-                RemoveAuthor(context.User.Id);
+                logger.LogDebug("Attempting to pass Gemini response to Discord: {Gemini}", response);
+                await context.OnMessageComplete(true, response);
+            }
+            catch (ArgumentException ae)
+            {
+                await context.OnMessageComplete(true, "Error during Gemini response.");
+                logger.LogError(ae, "Gemini responded, but no message?");
                 return;
             }
 
-            var geminiResponse = string.Join("\n", responseSplit[1..]);
-            logger.LogDebug("Attempting to pass Gemini response to Discord: {Gemini}", geminiResponse);
-            await context.OnMessageComplete(true, geminiResponse);
-            context.Questions.Add(new ConversationContext.SystemMessage(geminiResponse)); // Keep system context.
+            context.Questions.Add(new ConversationContext.SystemMessage(response)); // Keep system context.
             logger.LogDebug("Successfully responded to {User}", context.User.Username);
         }
         catch (Exception e)
         {
             logger.LogError(e, "Exception during message processing");
-            // Not sure that this is needed if we use finally -> responded
-            //_conversationContexts.Clear(); // Remove all questions to avoid spamming the API in the event it fails prior to removal.
         }
         finally
         {
