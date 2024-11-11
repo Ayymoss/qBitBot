@@ -8,7 +8,7 @@ public class ConversationContext(
     SocketGuildUser user,
     IMessage message,
     bool respondImmediately,
-    Func<bool, string, Task> callback,
+    ConversationContext.MessageCompleteDelegate onMessageCompleted,
     TimeSpan respondAfter) : IDisposable
 {
     public bool TimerSubscribed { get; set; }
@@ -20,9 +20,20 @@ public class ConversationContext(
     };
 
     /// <summary>
-    /// bool - success of response | string - message of response
+    /// Gets or sets the delegate to be called upon the completion of a message processing operation.
     /// </summary>
-    public Func<bool, string, Task> OnMessageComplete { get; set; } = callback;
+    /// <remarks>
+    /// The delegate receives a boolean indicating the success of the operation and a string containing a message.
+    /// </remarks>
+    public MessageCompleteDelegate OnMessageCompleted { get; set; } = onMessageCompleted;
+
+    /// <summary>
+    /// Represents a delegate that is invoked upon the completion of a message processing event.
+    /// </summary>
+    /// <param name="success">Indicates whether the message processing was successful.</param>
+    /// <param name="message">The resulting message after processing.</param>
+    /// <returns>A task representing the asynchronous operation.</returns>
+    public delegate Task MessageCompleteDelegate(bool success, string message);
 
     public SocketGuildUser User { get; } = user;
 

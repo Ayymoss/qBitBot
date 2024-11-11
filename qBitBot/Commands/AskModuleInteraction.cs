@@ -31,14 +31,13 @@ public class AskModuleInteraction(MessageProcessingService messageProcessingServ
 
             await DeferAsync();
 
-            var userMessagesAbove = await Context.Channel.GetMessagesAsync(message.Id, Direction.Before, 3)
-                .FlattenAsync();
             var userMessagesBelow = await Context.Channel.GetMessagesAsync(message.Id, Direction.After, 10)
                 .FlattenAsync();
 
-            var userMessages = userMessagesAbove.Concat(userMessagesBelow).Prepend(message);
+            var userMessages = userMessagesBelow.Prepend(message);
             var relatedMessages = userMessages
                 .Where(m => m.Author.Id == message.Author.Id)
+                .Where(m => (m.Timestamp - message.Timestamp).Duration() <= TimeSpan.FromMinutes(10))
                 .OrderBy(m => m.Timestamp)
                 .ToList();
 

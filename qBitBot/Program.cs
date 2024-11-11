@@ -27,7 +27,7 @@ public static class Program
         RegisterLogging(configuration);
         serviceCollection.AddSingleton(configuration);
 
-        serviceCollection.AddHttpClient();
+        serviceCollection.AddHttpClient("qBitHttpClient");
 
         serviceCollection.AddSingleton(new DiscordSocketClient(new DiscordSocketConfig { GatewayIntents = GatewayIntents.All }));
         serviceCollection.AddSingleton<GoogleAiService>();

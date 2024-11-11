@@ -14,7 +14,7 @@ public class MessageProcessingService(
     ILogger<MessageProcessingService> logger,
     GoogleAiService googleAiService,
     Configuration config,
-    HttpClient httpClient,
+    IHttpClientFactory httpClientFactory,
     DiscordSocketClient client) : IDisposable
 {
     private readonly ConcurrentDictionary<ulong, ConversationContext> _conversationContexts = [];
@@ -28,11 +28,11 @@ public class MessageProcessingService(
     };
 
     public void AddOrUpdateQuestion(SocketGuildUser user, List<IMessage> messages, bool respondImmediately,
-        Func<bool, string, Task> callback)
+        ConversationContext.MessageCompleteDelegate messageComplete)
     {
         foreach (var message in messages)
         {
-            _conversationContexts.AddOrUpdate(user.Id, new ConversationContext(user, message, false, callback,
+            _conversationContexts.AddOrUpdate(user.Id, new ConversationContext(user, message, false, messageComplete,
                 config.GeminiRespondAfter), (_, context) =>
             {
                 // New question, so we update appropriately.
@@ -40,7 +40,7 @@ public class MessageProcessingService(
 
                 // We need to respond immediately if they are replying to the bot.
                 if (context.Questions.Last() is ConversationContext.SystemMessage) respondImmediately = true;
-                context.OnMessageComplete = callback;
+                context.OnMessageCompleted = messageComplete;
 
                 // Add the latest question...
                 context.Questions.Add(new ConversationContext.UserMessage(message));
@@ -91,7 +91,7 @@ public class MessageProcessingService(
             if (string.IsNullOrWhiteSpace(response))
             {
                 logger.LogWarning("Received response was empty, discarding question. Response: {Response}", response);
-                await context.OnMessageComplete(false, string.Empty);
+                await context.OnMessageCompleted(false, string.Empty);
                 RemoveAuthor(context.User.Id);
                 return;
             }
@@ -103,7 +103,7 @@ public class MessageProcessingService(
             if (response.StartsWith("NO") || responseSplit.First().Contains("NO"))
             {
                 logger.LogWarning("Received response started with 'NO', discarding question. Response: {Response}", response);
-                await context.OnMessageComplete(false, string.Empty);
+                await context.OnMessageCompleted(false, string.Empty);
                 RemoveAuthor(context.User.Id);
                 return;
             }
@@ -111,11 +111,11 @@ public class MessageProcessingService(
             try
             {
                 logger.LogDebug("Attempting to pass Gemini response to Discord: {Gemini}", response);
-                await context.OnMessageComplete(true, response);
+                await context.OnMessageCompleted(true, response);
             }
             catch (ArgumentException ae)
             {
-                await context.OnMessageComplete(true, "Error during Gemini response.");
+                await context.OnMessageCompleted(true, "Error during Gemini response.");
                 logger.LogError(ae, "Gemini responded, but no message?");
                 return;
             }
@@ -192,6 +192,7 @@ public class MessageProcessingService(
 
     private async Task<List<PromptContentBase>> CreatePromptParts(List<ConversationContext.Message> questions)
     {
+        using var httpClient = httpClientFactory.CreateClient("qBitHttpClient");
         List<PromptContentBase> prompts = [];
 
         foreach (var question in questions)
@@ -257,6 +258,5 @@ public class MessageProcessingService(
     public void Dispose()
     {
         _cleanUpTask.Dispose();
-        httpClient.Dispose();
     }
 }
