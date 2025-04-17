@@ -35,15 +35,9 @@ public class MessageProcessingService(
             _conversationContexts.AddOrUpdate(user.Id, new ConversationContext(user, message, false, messageComplete,
                 config.GeminiRespondAfter), (_, context) =>
             {
-                // New question, so we update appropriately.
-                context.Responded = false;
-
-                // We need to respond immediately if they are replying to the bot.
-                if (context.Questions.Last() is ConversationContext.SystemMessage) respondImmediately = true;
-                context.OnMessageCompleted = messageComplete;
-
-                // Add the latest question...
-                context.Questions.Add(new ConversationContext.UserMessage(message));
+                context.Responded = false; // Reset state
+                context.OnMessageCompleted = messageComplete; // Update callback
+                context.Questions.Add(new ConversationContext.UserMessage(message)); // Add message 
                 return context;
             });
         }
@@ -149,7 +143,7 @@ public class MessageProcessingService(
 
         if (messageAuthorId == replyAuthorId) return false;
 
-        var context = _conversationContexts.FirstOrDefault(x => x.Key == messageAuthorId);
+        var context = _conversationContexts.FirstOrDefault(x => x.Key == replyAuthorId);
         if (context.Value is null) return false;
 
         // If the bot HAS responded and the user ISN'T replying to the bot, set Responded to true and return true
@@ -166,16 +160,22 @@ public class MessageProcessingService(
         return true;
     }
 
-    public bool IsUsageCapMet(ulong guildUserId)
+    public bool IsUsageCapMet(ulong userId)
     {
-        if (!_usageCounts.TryGetValue(guildUserId, out var count)) return false;
+        if (!_usageCounts.TryGetValue(userId, out var count)) return false;
         return count >= 10;
     }
 
-    public bool HasUserAskedQuestion(ulong guildUserId)
+    public bool IsUserInConversation(ulong userId)
     {
-        var result = _conversationContexts.FirstOrDefault(x => x.Key == guildUserId);
-        return result.Value is not null && result.Value.Responded;
+        return _conversationContexts.ContainsKey(userId);
+    }
+
+    public bool MarkConversationAsResponded(ulong userId)
+    {
+        if (!_conversationContexts.TryGetValue(userId, out var context)) return false;
+        context.Responded = true;
+        return true;
     }
 
     private void CleanUpConversations(object? sender, ElapsedEventArgs args)

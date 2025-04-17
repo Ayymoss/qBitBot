@@ -52,41 +52,73 @@ public class DiscordBotService
         if (socketMessage is not SocketUserMessage message) return Task.CompletedTask;
         if (socketMessage.Author is not SocketGuildUser guildUser) return Task.CompletedTask;
 
-        // User asked a follow-up question.
-        if (message.Type is not MessageType.Reply && _messageProcessingService.HasUserAskedQuestion(guildUser.Id))
+        switch (message.Type)
         {
-            _logger.LogDebug("Ignoring message from {User} as it wasn't a reply", guildUser.Username);
-            return Task.CompletedTask;
+            case MessageType.Reply when message.ReferencedMessage.Author.Id != _client.CurrentUser.Id:
+            {
+                if (message.ReferencedMessage.Author.Id != message.Author.Id &&
+                    _messageProcessingService.MarkConversationAsResponded(message.ReferencedMessage.Author.Id))
+                {
+                    _logger.LogDebug("{User} responded to {Asker}, setting as replied", guildUser.Username,
+                        message.ReferencedMessage.Author.Username);
+                }
+                else
+                {
+                    _logger.LogDebug("Ignoring reply by {User} as not related to any current bot conversation", guildUser.Username);
+                }
+
+                return Task.CompletedTask;
+            }
+            // Respond ONLY if the user is replying to the bot *directly*.
+            case MessageType.Reply when message.ReferencedMessage.Author.Id == _client.CurrentUser.Id:
+            {
+                if (_messageProcessingService.IsUserInConversation(guildUser.Id))
+                {
+                    _messageProcessingService.AddOrUpdateQuestion(guildUser, [message], true, (_, gemini) => message.ReplyAsync(gemini));
+                }
+                else
+                {
+                    _logger.LogDebug("Ignoring reply from {User} to the bot as there's no active conversation", guildUser.Username);
+                }
+
+                return Task.CompletedTask;
+            }
         }
 
-        // Someone else already responded to their question.
-        if (_messageProcessingService.IsAnsweredQuestion(message))
-        {
-            _logger.LogDebug("{User} has responded to {Author}. Setting Responded state", guildUser.Username,
-                message.ReferencedMessage.Author.Username);
-            return Task.CompletedTask;
-        }
-
-        // Ignore messages where the user has established themselves in the Discord.
-        if (!_messageProcessingService.HasUserAskedQuestion(guildUser.Id) && (!guildUser.JoinedAt.HasValue ||
-                                                                              TimeProvider.System.GetUtcNow() - guildUser.JoinedAt.Value >
-                                                                              _config.IgnoreUserAfter))
+        if (ShouldIgnoreUser(guildUser))
         {
             _logger.LogDebug("Ignoring message from {Author} as their join date {JoinDate} is older than {IgnoreTime}", guildUser.Username,
                 guildUser.JoinedAt ?? default, _config.IgnoreUserAfter);
             return Task.CompletedTask;
         }
 
-        if (guildUser.Roles.All(role => role.Id == guildUser.Guild.EveryoneRole.Id)
-            && _messageProcessingService.IsUsageCapMet(guildUser.Id))
+        if (IsUsageCapMet(guildUser))
         {
             message.ReplyAsync("You've used this bot a lot recently. Please use Gemini yourself to continue.");
             _logger.LogDebug("{User} has hit their usage cap", guildUser.Username);
             return Task.CompletedTask;
         }
 
+        if (message.Type is MessageType.Reply)
+        {
+            _logger.LogDebug("{User} is replying to something else, unrelated, dismissing", guildUser.Username);
+            return Task.CompletedTask;
+        }
+
+        // Handle new conversations
         _messageProcessingService.AddOrUpdateQuestion(guildUser, [message], false, (_, gemini) => message.ReplyAsync(gemini));
         return Task.CompletedTask;
+    }
+
+    private bool ShouldIgnoreUser(SocketGuildUser guildUser)
+    {
+        return !guildUser.JoinedAt.HasValue || TimeProvider.System.GetUtcNow() - guildUser.JoinedAt.Value > _config.IgnoreUserAfter;
+    }
+
+    private bool IsUsageCapMet(SocketGuildUser guildUser)
+    {
+        return guildUser.Roles.All(role => role.Id == guildUser.Guild.EveryoneRole.Id) &&
+               _messageProcessingService.IsUsageCapMet(guildUser.Id);
     }
 
     private Task Log(LogMessage msg)

@@ -1,3 +1,4 @@
 ﻿<Solution>
   <Project Path="qBitBot\qBitBot.csproj" Type="Classic C#" />
+  <Project Path="qBitJanitor\qBitJanitor.csproj" Type="Classic C#" />
 </Solution>
