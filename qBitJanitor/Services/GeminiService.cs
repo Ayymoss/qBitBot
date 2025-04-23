@@ -108,4 +108,54 @@ public class GeminiService(
 
         return null;
     }
+
+    public async Task<string?> GetAnswerForQuestionAsync(string systemPrompt, string userQuestion)
+    {
+        var combinedPrompt = $"{systemPrompt}\n\nQuestion: {userQuestion}";
+        var request = GeminiHelper.CreateGeminiTextRequest(combinedPrompt);
+
+        HttpResponseMessage? response = null;
+        try
+        {
+            response = await geminiApi.GenerateContentStreamAsync(ModelId, GenerateContentApi, _configuration.GeminiToken, request);
+
+            if (response.IsSuccessStatusCode)
+            {
+                var fullResponseContent = await response.Content.ReadAsStringAsync();
+                var chunks = JsonSerializer.Deserialize<List<GenerateContentResponseChunk>>(fullResponseContent, jsonOptions);
+
+                if (chunks != null && chunks.Count != 0)
+                {
+                    var textResponse = chunks
+                        .Where(chunk => chunk.Candidates != null)
+                        .SelectMany(chunk => chunk.Candidates!)
+                        .Where(candidate => candidate.Content?.Parts != null)
+                        .SelectMany(candidate => candidate.Content!.Parts!)
+                        .Select(part => part.Text);
+                    
+                    var textResult = string.Join("", textResponse);
+                    return textResult.Replace("  ", " ");
+                }
+                else
+                {
+                    logger.LogWarning("Warning: Stream received and parsed, but no valid chunks with candidates were found");
+                    return null;
+                }
+            }
+            else
+            {
+                logger.LogError("API Error: {ResponseStatusCode} {ResponseReasonPhrase}", (int)response.StatusCode, response.ReasonPhrase);
+                return null;
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogError("Unexpected Error while getting answer: {Exception}", ex);
+            return null;
+        }
+        finally
+        {
+            response?.Dispose();
+        }
+    }
 }

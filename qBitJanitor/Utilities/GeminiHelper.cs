@@ -62,4 +62,25 @@ public static class GeminiHelper
             }
         };
     }
+    
+    public static GeminiRequest CreateGeminiTextRequest(string prompt)
+    {
+        return new GeminiRequest
+        {
+            Contents = [
+                new Content
+                {
+                    Role = "user",
+                    Parts = [new Part { Text = prompt }]
+                }
+            ],
+            SafetySettings =
+            [
+                new SafetySetting { Category = "HARM_CATEGORY_HARASSMENT", Threshold = "BLOCK_ONLY_HIGH" },
+                new SafetySetting { Category = "HARM_CATEGORY_HATE_SPEECH", Threshold = "BLOCK_ONLY_HIGH" },
+                new SafetySetting { Category = "HARM_CATEGORY_SEXUALLY_EXPLICIT", Threshold = "BLOCK_ONLY_HIGH" },
+                new SafetySetting { Category = "HARM_CATEGORY_DANGEROUS_CONTENT", Threshold = "BLOCK_NONE" }
+            ]
+        };
+    }
 }

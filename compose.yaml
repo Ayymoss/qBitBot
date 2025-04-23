@@ -1,0 +1,9 @@
+﻿services:
+  qbitjanitor:
+    restart: always
+    image: qbitjanitor
+    build:
+      context: .
+      dockerfile: qBitJanitor/Dockerfile
+    volumes:
+      - /opt/qbitbot-data/:/app/data/

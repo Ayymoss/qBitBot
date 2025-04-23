@@ -58,24 +58,33 @@ public static class Program
 
     private static void RegisterHostConfiguration(IConfigurationBuilder configurationBuilder)
     {
-        if (!Directory.Exists(Path.Join(AppContext.BaseDirectory, "_Configuration")))
-            Directory.CreateDirectory(Path.Join(AppContext.BaseDirectory, "_Configuration"));
+#if DEBUG
+        var path = Path.Join(AppContext.BaseDirectory, "_Configuration");
+#else
+        var path = Path.Join("/app", "data", "_Configuration");
+#endif
 
-        configurationBuilder.SetBasePath(Path.Join(AppContext.BaseDirectory, "_Configuration"))
-            .AddJsonFile("Configuration.json", false, true);
+        if (!Directory.Exists(path)) Directory.CreateDirectory(path);
+        configurationBuilder.SetBasePath(path).AddJsonFile("Configuration.json", false, true);
     }
 
     private static void RegisterLogging(Configuration configuration)
     {
-        if (!Directory.Exists(Path.Join(AppContext.BaseDirectory, "_Log")))
-            Directory.CreateDirectory(Path.Join(AppContext.BaseDirectory, "_Log"));
+#if DEBUG
+        var path = Path.Join(AppContext.BaseDirectory, "_Log");
+#else
+        var path = Path.Join("/app", "data", "_Log");
+#endif
+
+        if (!Directory.Exists(path))
+            Directory.CreateDirectory(path);
 
         var loggerConfig = new LoggerConfiguration()
             .Enrich.FromLogContext()
             .Enrich.With<ShortSourceContextEnricher>()
             .WriteTo.Console()
             .WriteTo.File(
-                Path.Join(AppContext.BaseDirectory, "_Log", "qBitBot-.log"),
+                Path.Join(path, "qBitBot-.log"),
                 rollingInterval: RollingInterval.Day,
                 retainedFileCountLimit: 10,
                 outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff} {Level:u3}] [{ShortSourceContext}] {Message:lj}{NewLine}{Exception}");

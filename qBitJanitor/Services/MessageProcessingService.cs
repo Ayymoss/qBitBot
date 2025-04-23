@@ -70,4 +70,32 @@ public class MessageProcessingService(GeminiService geminiService, ILogger<Messa
 
         return usage.Count >= 10;
     }
+
+    public async Task AnswerQuestionAsync(ulong userId, string userQuestion, GeminiSuccessfulResponseDelegate responseDelegate)
+    {
+        const string systemPrompt = "You are a helpful assistant that specializes in answering questions about qBitTorrent. " +
+                                    "Provide detailed, accurate answers to questions about qBitTorrent's features, " +
+                                    "functionality, configuration, and troubleshooting. If the question is not related " +
+                                    "to qBitTorrent, politely explain that you can only answer questions about qBitTorrent. " +
+                                    "Limit your answer to max of 2000 characters.";
+
+        var result = await geminiService.GetAnswerForQuestionAsync(systemPrompt, userQuestion);
+
+        if (result is null)
+        {
+            await responseDelegate(false, "Error: Unable to generate an answer at this time.");
+            return;
+        }
+
+        if (_geminiUsage.TryGetValue(userId, out var usage))
+        {
+            usage.Add(DateTimeOffset.UtcNow);
+        }
+        else
+        {
+            _geminiUsage.Add(userId, [DateTimeOffset.UtcNow]);
+        }
+
+        await responseDelegate(true, result);
+    }
 }
